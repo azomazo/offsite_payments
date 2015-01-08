@@ -1,9 +1,9 @@
 module OffsitePayments #:nodoc:
   module Integrations #:nodoc:
-    # Documentation: https://www.liqpay.com/?do=pages&p=cnb10
+    # Documentation: https://www.liqpay.com/doc
     module Liqpay
       mattr_accessor :service_url
-      self.service_url = 'https://liqpay.com/?do=clickNbuy'
+      self.service_url = 'https://www.liqpay.com/api/checkout'
 
       mattr_accessor :signature_parameter_name
       self.signature_parameter_name = 'signature'
@@ -21,28 +21,30 @@ module OffsitePayments #:nodoc:
       end
 
       class Helper < OffsitePayments::Helper
+
+        LIQPAY_FIELDS = [:version, :public_key, :amount, :currency, :description, :order_id,
+                         :type, :subscribe, :subscribe_date_start, :subscribe_periodicity,
+                         :server_url, :result_url, :pay_way, :language, :sandbox]
+
         def initialize(order, account, options = {})
-          @secret = options.delete(:secret)
+          @public_key = options.delete(:public_key)
+          @private_key = options.delete(:private_key)
           super
 
-          add_field 'version', '1.2'
+          add_field 'version', '3'
         end
 
         def form_fields
-          xml = "<request>
-            <version>1.2</version>
-            <result_url>#{@fields["result_url"]}</result_url>
-            <server_url>#{@fields["server_url"]}</server_url>
-            <merchant_id>#{@fields["merchant_id"]}</merchant_id>
-            <order_id>#{@fields["order_id"]}</order_id>
-            <amount>#{@fields["amount"]}</amount>
-            <currency>#{@fields["currency"]}</currency>
-            <description>#{@fields["description"]}</description>
-            <default_phone>#{@fields["default_phone"]}</default_phone>
-            <pay_way>card</pay_way>
-            </request>".strip
-          sign = Base64.encode64(Digest::SHA1.digest("#{@secret}#{xml}#{@secret}")).strip
-          {"operation_xml" => Base64.encode64(xml), "signature" => sign}
+          json = {}
+          LIQPAY_FIELDS.each do |field|
+            value = field == :public_key ? @public_key : @fields[field.to_s]
+            json[field] = value if !value.nil?
+          end
+          data = Base64.encode64(JSON.generate(json))
+          {
+            'data' => data,
+            'signature' => Base64.encode64(Digest::SHA1.digest("#{@private_key}#{data}#{@private_key}")).strip
+          }
         end
 
         mapping :account, 'merchant_id'
@@ -64,19 +66,15 @@ module OffsitePayments #:nodoc:
         def initialize(post, options = {})
           raise ArgumentError if post.blank?
           super
-          @params.merge!(Hash.from_xml(Base64.decode64(xml))["response"])
+          @params.merge!(JSON.parse(Base64.decode64(json)))
         end
 
-        def xml
-          @params["operation_xml"]
+        def json
+          @params['data']
         end
 
         def complete?
-          status == 'success'
-        end
-
-        def account
-          params['merchant_id']
+          status == 'success' || status == 'sandbox'
         end
 
         def amount
@@ -86,6 +84,7 @@ module OffsitePayments #:nodoc:
         def item_id
           params['order_id']
         end
+        alias_method :order_id, :item_id
 
         def transaction_id
           params['transaction_id']
@@ -115,16 +114,36 @@ module OffsitePayments #:nodoc:
           params['currency']
         end
 
+        # Available values:
+        #
+        # * success
+        # * failure
+        # * wait_secure
+        # * wait_accept
+        # * wait_lc
+        # * processing
+        # * sandbox
+        # * subscribed
+        # * unsubscribed
+        # * reversed
         def status
           params['status'] # 'success', 'failure' or 'wait_secure'
         end
 
-        def code
-          params['code']
+        def description
+          params['description']
+        end
+
+        # Available values:
+        #
+        # * buy
+        # * donate
+        def type
+          params['type']
         end
 
         def generate_signature_string
-          "#{@options[:secret]}#{Base64.decode64(xml)}#{@options[:secret]}"
+          "#{@options[:public_key]}#{Base64.decode64(json)}#{@options[:public_key]}"
         end
 
         def generate_signature
@@ -143,16 +162,12 @@ module OffsitePayments #:nodoc:
 
         def initialize(post)
           super
-          xml = Base64.decode64(@params["operation_xml"])
-          @params.merge!(Hash.from_xml(xml)["response"])
+          json = Base64.decode64(@params['data'])
+          @params.merge!(JSON.parse(json))
         end
 
         def complete?
-          status == 'success'
-        end
-
-        def account
-          params['merchant_id']
+          status == 'success' || status == 'sandbox'
         end
 
         def amount
@@ -162,6 +177,7 @@ module OffsitePayments #:nodoc:
         def item_id
           params['order_id']
         end
+        alias_method :order_id, :item_id
 
         def transaction_id
           params['transaction_id']
@@ -191,16 +207,43 @@ module OffsitePayments #:nodoc:
           params['currency']
         end
 
+        # Available values:
+        #
+        # * success
+        # * failure
+        # * wait_secure
+        # * wait_accept
+        # * wait_lc
+        # * processing
+        # * sandbox
+        # * subscribed
+        # * unsubscribed
+        # * reversed
         def status
           params['status'] # 'success', 'failure' or 'wait_secure'
         end
 
-        def code
-          params['code']
+        def description
+          params['description']
+        end
+
+        # Available values:
+        #
+        # * buy
+        # * donate
+        def type
+          params['type']
         end
 
         def generate_signature_string
-          ['', version, @options[:secret], action_name, sender_phone, account, gross, currency, item_id, transaction_id, status, code, ''].flatten.compact.join('|')
+          fields = [:version, :public_key, :amount, :currency, :description, :order_id,
+                    :type, :sender_phone]
+          json = {}
+          fields.each do |field|
+            value = field == :public_key ?  @options[:public_key] : send(field)
+            json[field] = value if value
+          end
+          [@options[:private_key], Base64.encode64(JSON.generate(json)), @options[:private_key]].join('')
         end
 
         def generate_signature
