@@ -27,8 +27,8 @@ module OffsitePayments #:nodoc:
                          :server_url, :result_url, :pay_way, :language, :sandbox]
 
         def initialize(order, account, options = {})
-          @public_key = options.delete(:public_key)
-          @private_key = options.delete(:private_key)
+          @public_key = account || options.delete(:public_key)
+          @private_key = options.delete(:secret)
           super
 
           add_field 'version', '3'
@@ -37,22 +37,36 @@ module OffsitePayments #:nodoc:
         def form_fields
           json = {}
           LIQPAY_FIELDS.each do |field|
-            value = field == :public_key ? @public_key : @fields[field.to_s]
+            if field == :public_key
+              value = @public_key
+            elsif field == :sandbox
+              value = @test
+              if value.to_s.strip.match(/d+/)
+                value
+              else
+                value = value.to_s == 'true' ? '1' : '0'
+              end
+            else
+              mapping = mappings.detect{|key, value| value.to_sym == field}
+              value = mapping.nil? ? @fields[field.to_s] : @fields[mapping[1]]
+            end
             json[field] = value if !value.nil?
           end
-          data = Base64.encode64(JSON.generate(json))
+          data = Base64.encode64(JSON.generate(json)).gsub(/\n/, '')
           {
             'data' => data,
-            'signature' => Base64.encode64(Digest::SHA1.digest("#{@private_key}#{data}#{@private_key}")).strip
+            'signature' => Base64.encode64(Digest::SHA1.digest("#{@private_key}#{data}#{@private_key}")).chomp
           }
         end
 
-        mapping :account, 'merchant_id'
+        mapping :account, 'public_key'
         mapping :amount, 'amount'
         mapping :currency, 'currency'
         mapping :order, 'order_id'
         mapping :description, 'description'
         mapping :phone, 'default_phone'
+        mapping :test, 'sandbox'
+        mapping :sandbox, 'sandbox'
 
         mapping :notify_url, 'server_url'
         mapping :return_url, 'result_url'
@@ -66,10 +80,18 @@ module OffsitePayments #:nodoc:
         def initialize(post, options = {})
           raise ArgumentError if post.blank?
           super
-          @params.merge!(JSON.parse(Base64.decode64(json)))
+          @params.merge!(json)
         end
 
         def json
+          JSON.parse(json_string)
+        end
+
+        def json_string
+          Base64.decode64(json_raw)
+        end
+
+        def json_raw
           @params['data']
         end
 
@@ -143,7 +165,7 @@ module OffsitePayments #:nodoc:
         end
 
         def generate_signature_string
-          "#{@options[:public_key]}#{Base64.decode64(json)}#{@options[:public_key]}"
+          "#{@options[:private_key]}#{Base64.encode64(json_string).gsub(/\n/, '')}#{@options[:private_key]}"
         end
 
         def generate_signature
